@@ -133,30 +133,42 @@ class PyTorchInference(Inference):
     def __init__(self, model: "Whisper", initial_token_length: int):
         self.model: "Whisper" = model
         self.initial_token_length = initial_token_length
-        self.kv_cache = {}
-        self.hooks = []
+        self.kv_cache = None
         self.saved_tokens = []
         self.saved_logits = []
 
     def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
-        if not self.kv_cache:
-            self.kv_cache, self.hooks = self.model.install_kv_cache_hooks()
+        n_group = tokens.shape[0]
+        device = tokens.device
+        dtype = audio_features.dtype
+
+        if self.kv_cache is None:
+            self.kv_cache = self.model.new_kv_cache(n_group, self.initial_token_length, device, dtype)
+            offset = 0
+            # print(f"{self.initial_token_length=}, {n_group=}")
+            # raise Exception
+        else:
+            # print(f"{n_group=}")
+            offset = self.kv_cache.shape[2]
+            # new_kv_cache = self.model.new_kv_cache(n_group, offset + 1, device, dtype)
+            # new_kv_cache[:, :, :-1, :] = self.kv_cache
+            new_kv_cache2 = torch.cat((self.kv_cache, self.model.new_kv_cache(n_group, 1, device, dtype)), dim=-2)
+            # assert (new_kv_cache == new_kv_cache2).all()
+            self.kv_cache = new_kv_cache2
 
         if tokens.shape[-1] > self.initial_token_length:
             # only need to use the last token except in the first forward pass
             tokens = tokens[:, -1:]
-        logits = self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
+
+        logits, _ = self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache, offset=torch.tensor(offset))
         self.saved_tokens.append(tokens)
         self.saved_logits.append(logits)
         return logits
 
     def cleanup_caching(self):
-        for hook in self.hooks:
-            hook.remove()
+        # raise Exception
+        self.kv_cache = None
 
-        self.kv_cache = {}
-        self.hooks = []
-        
         def cmpi(dt, t):
             ex = torch.all(dt == t).item()
             if not ex:

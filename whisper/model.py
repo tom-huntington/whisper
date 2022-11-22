@@ -55,6 +55,8 @@ def sinusoids(length, channels, max_timescale=10000):
 
 
 class MultiHeadAttention(nn.Module):
+    layer_count = 0
+
     def __init__(self, n_state: int, n_head: int):
         super().__init__()
         self.n_head = n_head
@@ -62,25 +64,41 @@ class MultiHeadAttention(nn.Module):
         self.key = Linear(n_state, n_state, bias=False)
         self.value = Linear(n_state, n_state)
         self.out = Linear(n_state, n_state)
+        self.layer_id = MultiHeadAttention.layer_count
+        MultiHeadAttention.layer_count += 1
 
     def forward(
         self,
         x: Tensor,
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
-        kv_cache: Optional[dict] = None,
+        kv_cache: Optional[Tensor] = None,
     ):
         q = self.query(x)
 
-        if kv_cache is None or xa is None or self.key not in kv_cache:
-            # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
-            # otherwise, perform key/value projections for self- or cross-attention as usual.
-            k = self.key(x if xa is None else xa)
-            v = self.value(x if xa is None else xa)
+        # if kv_cache is None or xa is None or self.key not in kv_cache:
+        #     # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
+        #     # otherwise, perform key/value projections for self- or cross-attention as usual.
+        if xa is not None:
+            k = self.key(xa)
+            v = self.value(xa)
         else:
-            # for cross-attention, calculate keys and values once and reuse in subsequent calls.
-            k = kv_cache[self.key]
-            v = kv_cache[self.value]
+            k = self.key(x)
+            v = self.value(x)
+            if kv_cache is not None:
+                key_id = self.layer_id - 4 - 8
+                value_id = key_id + 1
+                size = k.shape[1]
+                # print(f"{key_id=}")
+                kv_cache[key_id, :, -size:, :] = k
+                kv_cache[value_id, :, -size:, :] = v
+                k = kv_cache[key_id]
+                v = kv_cache[value_id]
+
+        # else:
+        #     # for cross-attention, calculate keys and values once and reuse in subsequent calls.
+        #     k = kv_cache[self.key]
+        #     v = kv_cache[self.value]
 
         wv = self.qkv_attention(q, k, v, mask)
         return self.out(wv)
@@ -119,7 +137,7 @@ class ResidualAttentionBlock(nn.Module):
         x: Tensor,
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
-        kv_cache: Optional[dict] = None,
+        kv_cache: Optional[Tensor] = None,
     ):
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)
         if self.cross_attn:
@@ -174,14 +192,13 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
+    def forward(self, x: Tensor, xa: Tensor, kv_cache: Tensor, offset: Tensor):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
         xa : torch.Tensor, shape = (batch_size, n_mels, n_audio_ctx)
             the encoded audio features to be attended on
         """
-        offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
         x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
         x = x.to(xa.dtype)
 
@@ -191,12 +208,13 @@ class TextDecoder(nn.Module):
         x = self.ln(x)
         logits = (x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)).float()
 
-        return logits
+        return logits, kv_cache
 
 
 class Whisper(nn.Module):
-    def __init__(self, dims: ModelDimensions):
+    def __init__(self, dims: ModelDimensions, name: str):
         super().__init__()
+        self.name = name
         self.dims = dims
         self.encoder = AudioEncoder(
             self.dims.n_mels,
@@ -261,6 +279,21 @@ class Whisper(nn.Module):
 
         self.decoder.apply(install_hooks)
         return cache, hooks
+
+    def new_kv_cache(self, n_group: int, length: int, device: torch.device, dtype: torch.dtype):
+        if self.name == "tiny.en" or self.name == "tiny":
+            size = [8, n_group, length, 384]
+        elif self.name == "base.en" or self.name == "base":
+            size = [12, n_group, length, 512]
+        elif self.name == "small.en" or self.name == "small":
+            size = [24, n_group, length, 768]
+        elif self.name == "medium.en" or self.name == "medium":
+            size = [48, n_group, length, 1024]
+        elif self.name == "large":
+            size = [64, n_group, length, 1280]
+        else:
+            raise ValueError(f"Unsupported model type: {self.name}")
+        return torch.zeros(size, dtype=dtype, device=device)
 
     detect_language = detect_language_function
     transcribe = transcribe_function
