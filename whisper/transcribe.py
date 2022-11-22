@@ -103,7 +103,7 @@ def transcribe(
         temperatures = [temperature] if isinstance(temperature, (int, float)) else temperature
         decode_result = None
 
-        for t in temperatures:
+        for t in (0,): #temperatures:
             kwargs = {**decode_options}
             if t > 0:
                 # disable beam_size and patience when t > 0
@@ -242,6 +242,7 @@ def transcribe(
             # update progress bar
             pbar.update(min(num_frames, seek) - previous_seek_value)
             previous_seek_value = seek
+            break
 
     return dict(text=tokenizer.decode(all_tokens[len(initial_prompt):]), segments=all_segments, language=language)
 

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Iterable, Optional, Sequence, Union, TYPE_CHECKING
 
+import pickle
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -133,6 +135,8 @@ class PyTorchInference(Inference):
         self.initial_token_length = initial_token_length
         self.kv_cache = {}
         self.hooks = []
+        self.saved_tokens = []
+        self.saved_logits = []
 
     def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
         if not self.kv_cache:
@@ -141,8 +145,10 @@ class PyTorchInference(Inference):
         if tokens.shape[-1] > self.initial_token_length:
             # only need to use the last token except in the first forward pass
             tokens = tokens[:, -1:]
-
-        return self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
+        logits = self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache)
+        self.saved_tokens.append(tokens)
+        self.saved_logits.append(logits)
+        return logits
 
     def cleanup_caching(self):
         for hook in self.hooks:
@@ -150,6 +156,9 @@ class PyTorchInference(Inference):
 
         self.kv_cache = {}
         self.hooks = []
+
+        with open('tokens_logits.pickle', 'wb') as f:
+            pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
 
     def rearrange_kv_cache(self, source_indices):
         for module, tensor in self.kv_cache.items():

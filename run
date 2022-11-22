@@ -1,0 +1,2 @@
+#!/usr/bin/sh
+./whis --best_of None --beam_size None --language English "/home/a/repos/unsupervised/ifollowhimto.wav"
