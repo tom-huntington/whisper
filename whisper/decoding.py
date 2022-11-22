@@ -156,9 +156,35 @@ class PyTorchInference(Inference):
 
         self.kv_cache = {}
         self.hooks = []
+        
+        def cmpi(dt, t):
+          ex = torch.all(dt == t).item()
+          if not ex:
+              maxdiff = (dt - t).abs().max().item()
+              print(f"tokes not exact {maxdiff=}")
+              raise Exception
+          # print(f'{s:15s} | exact: {str(ex):5s} | approximate: {str(app):5s} | maxdiff: {maxdiff}')
+          
+        def cmpf(dt, t):
+          ex = torch.all(dt == t).item()
+          app = torch.allclose(dt, t)
+          if not ex:
+              maxdiff = (dt - t).abs().max().item()
+              print(f"logits not exact {maxdiff=}")
+              raise Exception
+              
+          # print(f'{s:15s} | exact: {str(ex):5s} | approximate: {str(app):5s} | maxdiff: {maxdiff}')
 
-        with open('tokens_logits.pickle', 'wb') as f:
-            pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
+        # with open('tokens_logits.pickle', 'wb') as f:
+        #     pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
+        print("opening pickle")
+        with open('tokens_logits.pickle', 'rb') as f:
+            pickle_dict = pickle.load(f)
+            correct_tokens = pickle_dict['tokens']
+            correct_logits = pickle_dict['logits']
+            for correct_t, current_t, correct_l, current_l in zip(correct_tokens, self.saved_tokens, correct_logits, self.saved_logits):
+                cmpi(correct_t, current_t)
+                cmpf(correct_l, current_l)
 
     def rearrange_kv_cache(self, source_indices):
         for module, tensor in self.kv_cache.items():
