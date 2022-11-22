@@ -158,22 +158,19 @@ class PyTorchInference(Inference):
         self.hooks = []
         
         def cmpi(dt, t):
-          ex = torch.all(dt == t).item()
-          if not ex:
-              maxdiff = (dt - t).abs().max().item()
-              print(f"tokes not exact {maxdiff=}")
-              raise Exception
-          # print(f'{s:15s} | exact: {str(ex):5s} | approximate: {str(app):5s} | maxdiff: {maxdiff}')
-          
+            ex = torch.all(dt == t).item()
+            if not ex:
+                maxdiff = (dt - t).abs().max().item()
+                print(f"tokes not exact {maxdiff=}")
+                raise Exception
+
         def cmpf(dt, t):
-          ex = torch.all(dt == t).item()
-          app = torch.allclose(dt, t)
-          if not ex:
-              maxdiff = (dt - t).abs().max().item()
-              print(f"logits not exact {maxdiff=}")
-              raise Exception
-              
-          # print(f'{s:15s} | exact: {str(ex):5s} | approximate: {str(app):5s} | maxdiff: {maxdiff}')
+            ex = torch.all(dt == t).item()
+            # app = torch.allclose(dt, t)
+            if not ex:
+                maxdiff = (dt - t).abs().max().item()
+                print(f"logits not exact {maxdiff=}")
+                raise Exception
 
         # with open('tokens_logits.pickle', 'wb') as f:
         #     pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
