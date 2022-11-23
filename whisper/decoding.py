@@ -137,52 +137,69 @@ class PyTorchInference(Inference):
         self.saved_tokens = []
         self.saved_logits = []
 
-    def logits(self, tokens: Tensor, audio_features: Tensor) -> Tensor:
+    def logits(self, tokens: Tensor, audio_features: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None) -> Tensor:
         n_group = tokens.shape[0]
         device = tokens.device
-        dtype = audio_features.dtype
+        audio_tensor = audio_features if audio_features is not None else af_cache_read
+        dtype = audio_tensor.dtype
+
+        af_cache_write = self.model.new_af_cache(n_group, device, dtype) if af_cache_read is None else None
 
         if self.kv_cache is None:
             self.kv_cache = self.model.new_kv_cache(n_group, self.initial_token_length, device, dtype)
             offset = 0
-            # print(f"{self.initial_token_length=}, {n_group=}")
-            # raise Exception
         else:
             # print(f"{n_group=}")
             offset = self.kv_cache.shape[2]
-            # new_kv_cache = self.model.new_kv_cache(n_group, offset + 1, device, dtype)
-            # new_kv_cache[:, :, :-1, :] = self.kv_cache
             new_kv_cache2 = torch.cat((self.kv_cache, self.model.new_kv_cache(n_group, 1, device, dtype)), dim=-2)
-            # assert (new_kv_cache == new_kv_cache2).all()
             self.kv_cache = new_kv_cache2
 
         if tokens.shape[-1] > self.initial_token_length:
             # only need to use the last token except in the first forward pass
             tokens = tokens[:, -1:]
 
-        logits, _ = self.model.decoder(tokens, audio_features, kv_cache=self.kv_cache, offset=torch.tensor(offset))
+        logits, kv_cache, af_cache = self.model.decoder(
+                        tokens,
+                        audio_features,
+                        kv_cache=self.kv_cache,
+                        offset=torch.tensor(offset),
+                        af_cache_write=af_cache_write,
+                        af_cache_read=af_cache_read
+                        )
+
         self.saved_tokens.append(tokens)
         self.saved_logits.append(logits)
-        return logits
+        return logits, kv_cache, af_cache
+
+    def actual_cleanup_caching(self):
+        self.kv_cache = None
+        self.saved_tokens = []
+        self.saved_logits = []
 
     def cleanup_caching(self):
         # raise Exception
-        self.kv_cache = None
+        # self.kv_cache = None
+
+        self.actual_cleanup_caching()
 
         def cmpi(dt, t):
+            assert dt.shape == t.shape
             ex = torch.all(dt == t).item()
             if not ex:
                 maxdiff = (dt - t).abs().max().item()
-                print(f"tokes not exact {maxdiff=}")
-                raise Exception
+                # print(f"tokes not exact {maxdiff=}")
+                # raise Exception
+                print(f"{dt-t=}")
 
         def cmpf(dt, t):
+            assert dt.shape == t.shape
             ex = torch.all(dt == t).item()
             # app = torch.allclose(dt, t)
             if not ex:
                 maxdiff = (dt - t).abs().max().item()
-                print(f"logits not exact {maxdiff=}")
-                raise Exception
+                # print(f"logits not exact {maxdiff=}")
+                # raise Exception
+                print(f"{dt-t=}")
 
         # with open('tokens_logits.pickle', 'wb') as f:
         #     pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
@@ -191,9 +208,12 @@ class PyTorchInference(Inference):
             pickle_dict = pickle.load(f)
             correct_tokens = pickle_dict['tokens']
             correct_logits = pickle_dict['logits']
+            i = 0
             for correct_t, current_t, correct_l, current_l in zip(correct_tokens, self.saved_tokens, correct_logits, self.saved_logits):
                 cmpi(correct_t, current_t)
                 cmpf(correct_l, current_l)
+                print(i)
+                i+=1
 
     def rearrange_kv_cache(self, source_indices):
         for module, tensor in self.kv_cache.items():
@@ -598,26 +618,32 @@ class DecodingTask:
 
         return tuple(sorted(set(suppress_tokens)))
 
-    def _get_audio_features(self, mel: Tensor):
+    def _get_audio_feature_cache(self, mel: Tensor, tokens: Tensor):
         if self.options.fp16:
             mel = mel.half()
 
         if mel.shape[-2:] == (self.model.dims.n_audio_ctx, self.model.dims.n_audio_state):
             # encoded audio features are given; skip audio encoding
             audio_features = mel
+            raise Exception
         else:
             audio_features = self.model.encoder(mel)
+            _, __, af_cache = self.inference.logits(tokens, audio_features=audio_features)
+            self.inference.actual_cleanup_caching()
+            # self.model.decoder()
 
         if audio_features.dtype != (torch.float16 if self.options.fp16 else torch.float32):
             return TypeError(f"audio_features has an incorrect dtype: {audio_features.dtype}")
 
-        return audio_features
+        # return audio_features
+        return audio_features, af_cache
 
     def _detect_language(self, audio_features: Tensor, tokens: Tensor):
         languages = [self.options.language] * audio_features.shape[0]
         lang_probs = None
 
         if self.options.language is None or self.options.task == "lang_id":
+            raise Exception
             lang_tokens, lang_probs = self.model.detect_language(audio_features, self.tokenizer)
             languages = [max(probs, key=probs.get) for probs in lang_probs]
             if self.options.language is None:
@@ -625,15 +651,17 @@ class DecodingTask:
 
         return languages, lang_probs
 
-    def _main_loop(self, audio_features: Tensor, tokens: Tensor):
-        assert audio_features.shape[0] == tokens.shape[0]
+    def _main_loop(self, audio_features: Tensor, audio_feature_cache: Tensor, tokens: Tensor):
+        assert audio_feature_cache.shape[1] == tokens.shape[0]
         n_batch = tokens.shape[0]
-        sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_features.device)
+        sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_feature_cache.device)
         no_speech_probs = [np.nan] * n_batch
+        # print(f"{audio_features=}")
 
         try:
             for i in range(self.sample_len):
-                logits = self.inference.logits(tokens, audio_features)
+                logits, _, __ = self.inference.logits(tokens, audio_features=audio_features, af_cache_read=None) #audio_feature_cache)
+                # print(f"{logits=}")
 
                 if i == 0 and self.tokenizer.no_speech is not None:  # save no_speech_probs
                     probs_at_sot = logits[:, self.sot_index].float().softmax(dim=-1)
@@ -662,8 +690,8 @@ class DecodingTask:
         tokenizer: Tokenizer = self.tokenizer
         n_audio: int = mel.shape[0]
 
-        audio_features: Tensor = self._get_audio_features(mel)  # encoder forward pass
-        tokens: Tensor = torch.tensor([self.initial_tokens]).repeat(n_audio, 1)
+        tokens: Tensor = torch.tensor([self.initial_tokens], device=mel.device).repeat(n_audio, 1)
+        audio_features, audio_feature_cache = self._get_audio_feature_cache(mel, tokens)  # encoder forward pass
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
@@ -674,11 +702,13 @@ class DecodingTask:
             ]
 
         # repeat the audio & text tensors by the group size, for beam search or best-of-n sampling
+        assert self.n_group == 1
+        audio_feature_cache = audio_feature_cache.repeat_interleave(self.n_group, dim=0)
         audio_features = audio_features.repeat_interleave(self.n_group, dim=0)
-        tokens = tokens.repeat_interleave(self.n_group, dim=0).to(audio_features.device)
+        tokens = tokens.repeat_interleave(self.n_group, dim=0) #.to(audio_features.device)
 
         # call the main sampling loop
-        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features=audio_features, audio_feature_cache=audio_feature_cache, tokens=tokens)
 
         # reshape the tensors to have (n_audio, n_group) as the first two dimensions
         audio_features = audio_features[:: self.n_group]

@@ -73,15 +73,28 @@ class MultiHeadAttention(nn.Module):
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         kv_cache: Optional[Tensor] = None,
+        af_cache_write: Optional[Tensor] = None,
+        af_cache_read: Optional[Tensor] = None,
     ):
         q = self.query(x)
 
         # if kv_cache is None or xa is None or self.key not in kv_cache:
         #     # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
         #     # otherwise, perform key/value projections for self- or cross-attention as usual.
-        if xa is not None:
-            k = self.key(xa)
-            v = self.value(xa)
+        if xa is not None or af_cache_read is not None:
+            if af_cache_read is None:
+                k = self.key(xa)
+                v = self.value(xa)
+                af_cache_write[self.layer_id - 13] = k
+                af_cache_write[self.layer_id - 13 + 1] = v
+            else:
+                k_ = self.key(xa)
+                v_ = self.value(xa)
+                k = af_cache_read[self.layer_id - 13]
+                v = af_cache_read[self.layer_id - 13 + 1]
+                assert (k_ == k).all()
+                assert (v_ == v).all()
+
         else:
             k = self.key(x)
             v = self.value(x)
@@ -89,7 +102,6 @@ class MultiHeadAttention(nn.Module):
                 key_id = self.layer_id - 4 - 8
                 value_id = key_id + 1
                 size = k.shape[1]
-                # print(f"{key_id=}")
                 kv_cache[key_id, :, -size:, :] = k
                 kv_cache[value_id, :, -size:, :] = v
                 k = kv_cache[key_id]
@@ -138,10 +150,12 @@ class ResidualAttentionBlock(nn.Module):
         xa: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         kv_cache: Optional[Tensor] = None,
+        af_cache_write: Optional[Tensor] = None,
+        af_cache_read: Optional[Tensor] = None,
     ):
-        x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)
+        x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache, af_cache_write=af_cache_write)
         if self.cross_attn:
-            x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)
+            x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache, af_cache_write=af_cache_write, af_cache_read=af_cache_read)
         x = x + self.mlp(self.mlp_ln(x))
         return x
 
@@ -192,7 +206,7 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Tensor, kv_cache: Tensor, offset: Tensor):
+    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
@@ -200,15 +214,20 @@ class TextDecoder(nn.Module):
             the encoded audio features to be attended on
         """
         x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
-        x = x.to(xa.dtype)
+        audio_tensor = xa if xa is not None else af_cache_read
+        x = x.to(audio_tensor.dtype)
 
         for block in self.blocks:
-            x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+            x = block(x, xa, mask=self.mask, kv_cache=kv_cache, af_cache_write=af_cache_write, af_cache_read=af_cache_read)
 
         x = self.ln(x)
         logits = (x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)).float()
 
-        return logits, kv_cache
+        return logits, kv_cache, af_cache_write
+
+    def forward_encoder(self, x: Tensor, xa: Tensor, kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None):
+        _, __, af_cache_write_out = self.forward(x, xa, kv_cache, offset, af_cache_write, af_cache_read=None)
+        return af_cache_write_out
 
 
 class Whisper(nn.Module):
@@ -281,6 +300,22 @@ class Whisper(nn.Module):
         return cache, hooks
 
     def new_kv_cache(self, n_group: int, length: int, device: torch.device, dtype: torch.dtype):
+        if self.name == "tiny.en" or self.name == "tiny":
+            size = [8, n_group, length, 384]
+        elif self.name == "base.en" or self.name == "base":
+            size = [12, n_group, length, 512]
+        elif self.name == "small.en" or self.name == "small":
+            size = [24, n_group, length, 768]
+        elif self.name == "medium.en" or self.name == "medium":
+            size = [48, n_group, length, 1024]
+        elif self.name == "large":
+            size = [64, n_group, length, 1280]
+        else:
+            raise ValueError(f"Unsupported model type: {self.name}")
+        return torch.zeros(size, dtype=dtype, device=device)
+
+    def new_af_cache(self, n_group: int, device: torch.device, dtype: torch.dtype):
+        length = 1500
         if self.name == "tiny.en" or self.name == "tiny":
             size = [8, n_group, length, 384]
         elif self.name == "base.en" or self.name == "base":
