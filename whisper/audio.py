@@ -113,6 +113,31 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
 
     window = torch.hann_window(N_FFT).to(audio.device)
     stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
+
+    input = audio
+    signal_dim = input.dim()
+    extended_shape = [1] * (3 - signal_dim) + list(input.size())
+    pad = int(N_FFT // 2)
+    input = torch.nn.functional.pad(audio.view(extended_shape), [pad, pad], 'reflect')
+    input = input.view(input.shape[-signal_dim:])
+
+    dft_mat = torch.fft.fft(torch.eye(N_FFT), dim=-1)
+    windowed = input.unfold(dimension=0, size=N_FFT, step=HOP_LENGTH) * window
+    stft_ = (torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat)[:, :201].T
+
+    max_diff = (stft - stft_).abs().max()
+    
+    print(f"{(stft == stft_).all()=} {torch.allclose(stft, stft)=} {max_diff=}")
+    
+
+
+    
+
+    print(f"{audio.shape} {stft.shape=} {dft_mat.shape=} {windowed.shape=} {window.shape=} {N_FFT=}, {HOP_LENGTH=}")
+    # audio.unfold()
+
+    raise Exception
+    
     magnitudes = stft[:, :-1].abs() ** 2
 
     filters = mel_filters(audio.device, n_mels)
@@ -121,4 +146,14 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     log_spec = torch.clamp(mel_spec, min=1e-10).log10()
     log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
     log_spec = (log_spec + 4.0) / 4.0
+
+
+
+
+
+
+
+
+
+
     return log_spec
