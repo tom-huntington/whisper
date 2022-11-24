@@ -114,44 +114,43 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     window = torch.hann_window(N_FFT).to(audio.device)
     stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
 
-    input = audio
-    signal_dim = input.dim()
-    extended_shape = [1] * (3 - signal_dim) + list(input.size())
-    pad = int(N_FFT // 2)
-    input = torch.nn.functional.pad(audio.view(extended_shape), [pad, pad], 'reflect')
-    input = input.view(input.shape[-signal_dim:])
+    dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat)
 
-    dft_mat = torch.fft.fft(torch.eye(N_FFT), dim=-1)
-    windowed = input.unfold(dimension=0, size=N_FFT, step=HOP_LENGTH) * window
-    stft_ = (torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat)[:, :201].T
+    def specify(input):
+        signal_dim = input.dim()
+        extended_shape = [1] * (3 - signal_dim) + list(input.size())
+        pad = int(N_FFT // 2)
+        print(f"{input.shape=} {signal_dim=} {extended_shape=} {pad=}")
+        input = torch.nn.functional.pad(audio.view(extended_shape), [pad, pad], 'reflect')
+        input = input.view(input.shape[-signal_dim:])
 
-    max_diff = (stft - stft_).abs().max()
+        windowed = input.unfold(dimension=0, size=N_FFT, step=HOP_LENGTH) * window
+        return (torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat)[:, :201].T
     
-    print(f"{(stft == stft_).all()=} {torch.allclose(stft, stft)=} {max_diff=}")
-    
+    # print(f"{(stft == stft_).all()=} {torch.allclose(stft, stft_)=} {max_diff=}")
+    # assert torch.allclose(stft, stft_)
+    # print(f"{audio.shape} {stft.shape=} {dft_mat.shape=} {windowed.shape=} {window.shape=} {N_FFT=}, {HOP_LENGTH=}")
+    # raise Exception
 
+    def melify(stft):
+        magnitudes = stft[:, :-1].abs() ** 2
 
-    
+        filters = mel_filters(audio.device, n_mels)
+        mel_spec = filters @ magnitudes
 
-    print(f"{audio.shape} {stft.shape=} {dft_mat.shape=} {windowed.shape=} {window.shape=} {N_FFT=}, {HOP_LENGTH=}")
-    # audio.unfold()
+        log_spec = torch.clamp(mel_spec, min=1e-10).log10()
+        log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
+        log_spec = (log_spec + 4.0) / 4.0
+        return log_spec
 
-    raise Exception
-    
-    magnitudes = stft[:, :-1].abs() ** 2
+    log_spec = melify(stft)
+    log_spec_ = melify(specify(audio))
 
-    filters = mel_filters(audio.device, n_mels)
-    mel_spec = filters @ magnitudes
+    max_diff = (log_spec - log_spec_).abs().max()
+    print(f"{(log_spec == log_spec_).all()=} {torch.allclose(log_spec, log_spec_)=} {max_diff=}")
+    assert max_diff.item() < 4e-5
 
-    log_spec = torch.clamp(mel_spec, min=1e-10).log10()
-    log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
-    log_spec = (log_spec + 4.0) / 4.0
-
-
-
-
-
-
+    # raise Exception
 
 
 
