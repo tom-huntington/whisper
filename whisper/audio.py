@@ -114,7 +114,7 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     window = torch.hann_window(N_FFT).to(audio.device)
     stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
 
-    dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat)
+    # dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat)
 
     def specify(input):
         signal_dim = input.dim()
@@ -144,11 +144,11 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
         return log_spec
 
     log_spec = melify(stft)
-    log_spec_ = melify(specify(audio))
+    # log_spec_ = melify(specify(audio))
 
-    max_diff = (log_spec - log_spec_).abs().max()
-    print(f"{(log_spec == log_spec_).all()=} {torch.allclose(log_spec, log_spec_)=} {max_diff=}")
-    assert max_diff.item() < 4e-5
+    # max_diff = (log_spec - log_spec_).abs().max()
+    # print(f"{(log_spec == log_spec_).all()=} {torch.allclose(log_spec, log_spec_)=} {max_diff=}")
+    # assert max_diff.item() < 4e-5
 
     # raise Exception
 

@@ -201,19 +201,26 @@ class PyTorchInference(Inference):
                 # raise Exception
                 print(f"{dt-t=}")
 
-        # with open('tokens_logits.pickle', 'wb') as f:
+        # raise Exception
+        # with open('tokens_logits2.pickle', 'wb') as f:
         #     pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
         print("opening pickle")
         with open('tokens_logits.pickle', 'rb') as f:
-            pickle_dict = pickle.load(f)
-            correct_tokens = pickle_dict['tokens']
-            correct_logits = pickle_dict['logits']
-            i = 0
-            for correct_t, current_t, correct_l, current_l in zip(correct_tokens, self.saved_tokens, correct_logits, self.saved_logits):
-                cmpi(correct_t, current_t)
-                cmpf(correct_l, current_l)
-                print(i)
-                i+=1
+            with open('tokens_logits2.pickle', 'rb') as f2:
+                pickle_dict = pickle.load(f)
+                correct_tokens = pickle_dict['tokens']
+                correct_logits = pickle_dict['logits']
+                pickle_dict2 = pickle.load(f2)
+                correct_tokens2 = pickle_dict2['tokens']
+                correct_logits2 = pickle_dict2['logits']
+                # i = 0
+                for correct_t, correct_t2, current_t, correct_l, correct_l2, current_l in zip(correct_tokens, correct_tokens2, self.saved_tokens, correct_logits, correct_logits2, self.saved_logits):
+                    cmpi(torch.stack((correct_t, correct_t2), dim=0), current_t)
+                    cmpf(torch.stack((correct_l, correct_t2), dim=0), current_l)
+                    # print(i)
+                    # i+=1
+
+        print("past test")
 
     def rearrange_kv_cache(self, source_indices):
         for module, tensor in self.kv_cache.items():
@@ -677,7 +684,10 @@ class DecodingTask:
                 # expand the tokens tensor with the selected next tokens
                 tokens, completed = self.decoder.update(tokens, logits, sum_logprobs)
 
+                if i > 40:
+                    break
                 if completed or tokens.shape[-1] > self.n_ctx:
+                    raise Exception
                     break
         finally:
             self.inference.cleanup_caching()
@@ -752,7 +762,7 @@ class DecodingTask:
 
 
 @torch.no_grad()
-def decode(model: "Whisper", mel: Tensor, options: DecodingOptions = DecodingOptions()) -> Union[DecodingResult, List[DecodingResult]]:
+def decode(model: "Whisper", mel: Tensor, options: DecodingOptions = DecodingOptions(), mel2: Optional[Tensor] = None) -> Union[DecodingResult, List[DecodingResult]]:
     """
     Performs decoding of 30-second audio segment(s), provided as Mel spectrogram(s).
 
@@ -772,6 +782,8 @@ def decode(model: "Whisper", mel: Tensor, options: DecodingOptions = DecodingOpt
     result: Union[DecodingResult, List[DecodingResult]]
         The result(s) of decoding contained in `DecodingResult` dataclass instance(s)
     """
+    mel = torch.stack((mel, mel2), dim=0)
+    
     single = mel.ndim == 2
     if single:
         mel = mel.unsqueeze(0)

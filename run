@@ -1,2 +1,3 @@
 #!/usr/bin/sh
-./whis --best_of None --beam_size None --language English "/home/a/repos/unsupervised/ifollowhimto.wav"
+# ./whis --best_of None --beam_size None --language English "/home/a/repos/unsupervised/ifollowhimto.wav"
+./whis --best_of None --beam_size None --language English --audio2 "/home/a/repos/audiobook/nowmycharms.wav" "/home/a/repos/unsupervised/ifollowhimto.wav"

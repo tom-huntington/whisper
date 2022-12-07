@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 def transcribe(
     model: "Whisper",
     audio: Union[str, np.ndarray, torch.Tensor],
+    audio2: Union[str, np.ndarray, torch.Tensor],
     *,
     verbose: Optional[bool] = None,
     temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
@@ -82,6 +83,7 @@ def transcribe(
         decode_options["fp16"] = False
 
     mel = log_mel_spectrogram(audio)
+    mel2 = log_mel_spectrogram(audio2)
 
     if decode_options.get("language", None) is None:
         if not model.is_multilingual:
@@ -99,7 +101,7 @@ def transcribe(
     task = decode_options.get("task", "transcribe")
     tokenizer = get_tokenizer(model.is_multilingual, language=language, task=task)
 
-    def decode_with_fallback(segment: torch.Tensor) -> DecodingResult:
+    def decode_with_fallback(segment: torch.Tensor, segment2: torch.Tensor) -> DecodingResult:
         temperatures = [temperature] if isinstance(temperature, (int, float)) else temperature
         decode_result = None
 
@@ -114,8 +116,9 @@ def transcribe(
                 kwargs.pop("best_of", None)
 
             options = DecodingOptions(**kwargs, temperature=t)
-            decode_result = model.decode(segment, options)
+            decode_result_list = model.decode(segment, options, segment2)
 
+            decode_result = decode_result_list[1]
             needs_fallback = False
             if compression_ratio_threshold is not None and decode_result.compression_ratio > compression_ratio_threshold:
                 needs_fallback = True  # too repetitive
@@ -175,10 +178,11 @@ def transcribe(
         while seek < num_frames:
             timestamp_offset = float(seek * HOP_LENGTH / SAMPLE_RATE)
             segment = pad_or_trim(mel[:, seek:], N_FRAMES).to(model.device).to(dtype)
+            segment2 = pad_or_trim(mel2[:, seek:], N_FRAMES).to(model.device).to(dtype)
             segment_duration = segment.shape[-1] * HOP_LENGTH / SAMPLE_RATE
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
-            result: DecodingResult = decode_with_fallback(segment)
+            result: DecodingResult = decode_with_fallback(segment, segment2)
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
@@ -252,6 +256,7 @@ def cli():
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("audio", nargs="+", type=str, help="audio file(s) to transcribe")
+    parser.add_argument("--audio2", type=str, help="second audio file to transcribe")
     parser.add_argument("--model", default="small", choices=available_models(), help="name of the Whisper model to use")
     parser.add_argument("--model_dir", type=str, default=None, help="the path to save model files; uses ~/.cache/whisper by default")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="device to use for PyTorch inference")
@@ -305,7 +310,8 @@ def cli():
     model = load_model(model_name, device=device, download_root=model_dir)
 
     for audio_path in args.pop("audio"):
-        result = transcribe(model, audio_path, temperature=temperature, **args)
+        audio_path2 = args.pop("audio2")
+        result = transcribe(model, audio_path, audio_path2, temperature=temperature, **args)
 
         audio_basename = os.path.basename(audio_path)
 
