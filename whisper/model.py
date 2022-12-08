@@ -88,12 +88,12 @@ class MultiHeadAttention(nn.Module):
                 af_cache_write[self.layer_id - 13] = k
                 af_cache_write[self.layer_id - 13 + 1] = v
             else:
-                k_ = self.key(xa)
-                v_ = self.value(xa)
+                # k_ = self.key(xa)
+                # v_ = self.value(xa)
                 k = af_cache_read[self.layer_id - 13]
                 v = af_cache_read[self.layer_id - 13 + 1]
-                assert (k_ == k).all()
-                assert (v_ == v).all()
+                # assert (k_ == k).all()
+                # assert (v_ == v).all()
 
         else:
             k = self.key(x)

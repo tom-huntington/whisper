@@ -157,7 +157,44 @@ class PyTorchInference(Inference):
         if tokens.shape[-1] > self.initial_token_length:
             # only need to use the last token except in the first forward pass
             tokens = tokens[:, -1:]
+            # tokens.shape=torch.Size([2, 3]) self.kv_cache.shape=torch.Size([24, 2, 3, 768]) af_cache_read.shape=torch.Size([24, 2, 1500, 768])
+            # logits.shape=torch.Size([2, 3, 51865]) kv_cache.shape=torch.Size([24, 2, 3, 768])
 
+            # tokens.shape=torch.Size([2, 1]) self.kv_cache.shape=torch.Size([24, 2, 4, 768]) af_cache_read.shape=torch.Size([24, 2, 1500, 768])
+            # logits.shape=torch.Size([2, 1, 51865]) kv_cache.shape=torch.Size([24, 2, 4, 768])
+
+            class wrapper(torch.nn.Module):
+                def __init__(self, model_decoder):
+                    super().__init__()
+                    self.model_decoder = model_decoder
+
+                def forward(self, tokens, kv_cache, offset, af_cache_read):
+                    _, __, ___ = self.model_decoder(tokens, None, kv_cache=kv_cache, offset=offset, af_cache_write=None, af_cache_read=af_cache_read)
+                    return _, __
+
+            torch.onnx.export(
+                wrapper(self.model.decoder),
+                (tokens, self.kv_cache, torch.tensor(offset), af_cache_read),
+                "decoder.onnx",
+                verbose=False,
+                opset_version=13,
+                input_names=["tokens", "kv_cache", "offset", "af_cache_read"],
+                output_names=["logits", "output_kv_cache"],
+                dynamic_axes={
+                    "tokens": [0, 1],
+                    "kv_cache": [1, 2],
+                    "af_cache_read": [1],
+                    # "logits": [0, 1],
+                    # "output_kv_cache": [1, 2],
+                }
+            )
+            exit(0)
+
+        if af_cache_write is not None:
+            print(f"{tokens.shape=} {audio_features.shape=} {self.kv_cache.shape=} {af_cache_write.shape=}")
+        if af_cache_read is not None:
+            assert audio_features is None
+            print(f"{tokens.shape=} {self.kv_cache.shape=} {af_cache_read.shape=}")
         logits, kv_cache, af_cache = self.model.decoder(
                         tokens,
                         audio_features,
@@ -166,6 +203,10 @@ class PyTorchInference(Inference):
                         af_cache_write=af_cache_write,
                         af_cache_read=af_cache_read
                         )
+        if af_cache is not None:
+            print(f"{logits.shape=} {kv_cache.shape=} {af_cache.shape=}\n")
+        else:
+            print(f"{logits.shape=} {kv_cache.shape=}\n")
 
         self.saved_tokens.append(tokens)
         self.saved_logits.append(logits)
@@ -667,7 +708,8 @@ class DecodingTask:
 
         try:
             for i in range(self.sample_len):
-                logits, _, __ = self.inference.logits(tokens, audio_features=audio_features, af_cache_read=None) #audio_feature_cache)
+                # logits, _, __ = self.inference.logits(tokens, audio_features=audio_features, af_cache_read=None) #audio_feature_cache)
+                logits, _, __ = self.inference.logits(tokens, audio_features=None, af_cache_read=audio_feature_cache)
                 # print(f"{logits=}")
 
                 if i == 0 and self.tokenizer.no_speech is not None:  # save no_speech_probs
