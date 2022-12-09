@@ -130,13 +130,14 @@ class Inference:
 
 
 class PyTorchInference(Inference):
-    def __init__(self, model: "Whisper", initial_token_length: int):
+    def __init__(self, model: "Whisper", initial_token_length: int, timestamp_begin: int):
         self.model: "Whisper" = model
         self.initial_token_length = initial_token_length
         assert initial_token_length == 3
         self.kv_cache = None
         self.saved_tokens = []
         self.saved_logits = []
+        self.timestamp_begin = timestamp_begin
 
     def logits(self, tokens: Tensor, audio_features: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None) -> Tensor:
         n_group = tokens.shape[0]
@@ -164,29 +165,46 @@ class PyTorchInference(Inference):
             # tokens.shape=torch.Size([2, 1]) self.kv_cache.shape=torch.Size([24, 2, 4, 768]) af_cache_read.shape=torch.Size([24, 2, 1500, 768])
             # logits.shape=torch.Size([2, 1, 51865]) kv_cache.shape=torch.Size([24, 2, 4, 768])
 
+
             class wrapper(torch.nn.Module):
-                def __init__(self, model_decoder):
+                def __init__(self, model_decoder, timestamp_begin):
                     super().__init__()
                     self.model_decoder = model_decoder
+                    self.timestamp_begin = timestamp_begin
 
                 def forward(self, tokens, kv_cache, offset, af_cache_read):
-                    _, __, ___ = self.model_decoder(tokens, None, kv_cache=kv_cache, offset=offset, af_cache_write=None, af_cache_read=af_cache_read)
-                    return _, __
 
+                    logits, output_kv_cache, ___ = self.model_decoder(tokens, None, kv_cache=kv_cache, offset=offset, af_cache_write=None, af_cache_read=af_cache_read)
+                    # print(f"{logits.shape=} {tokens.shape=}")
+                    # raise Exception
+                    logits_ = logits[:, -1, :]
+
+                    logits_clone = torch.clone(logits_)  # <----add this
+                    # for k in range(tokens.shape[0]):  # <----add this
+                    logits_clone[:, :self.timestamp_begin] = -np.inf  # <----add this
+                    ts_token = torch.argmax(logits_clone,  dim=-1)  # <----add this
+                    token = torch.argmax(logits_, dim=-1)
+                    return logits, output_kv_cache, token, ts_token
+
+            w = wrapper(self.model.decoder, self.timestamp_begin)
+            # w(tokens, self.kv_cache, torch.tensor(offset), af_cache_read)
+            # raise Exception
             torch.onnx.export(
-                wrapper(self.model.decoder),
+                w,
                 (tokens, self.kv_cache, torch.tensor(offset), af_cache_read),
                 "decoder.onnx",
                 verbose=False,
                 opset_version=13,
                 input_names=["tokens", "kv_cache", "offset", "af_cache_read"],
-                output_names=["logits", "output_kv_cache"],
+                output_names=["logits", "output_kv_cache", "token", "ts_token"],
                 dynamic_axes={
                     "tokens": [0, 1],
                     "kv_cache": [1, 2],
                     "af_cache_read": [1],
                     "logits": [0, 1],
                     "output_kv_cache": [1, 2],
+                    "token": [0],
+                    "ts_token": [0]
                 }
             )
             raise Exception
@@ -582,7 +600,7 @@ class DecodingTask:
         self.sot_index: int = self.initial_tokens.index(tokenizer.sot)
 
         # inference: implements the forward pass through the decoder, including kv caching
-        self.inference = PyTorchInference(model, len(self.initial_tokens))
+        self.inference = PyTorchInference(model, len(self.initial_tokens), self.tokenizer.timestamp_begin)
 
         # sequence ranker: implements how to rank a group of sampled sequences
         self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)

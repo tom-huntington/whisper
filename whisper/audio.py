@@ -111,9 +111,9 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
             audio = load_audio(audio)
         audio = torch.from_numpy(audio)
 
-    audio = audio.to('cuda')
+    # audio = audio.to('cuda')
     window = torch.hann_window(N_FFT).to(audio.device)
-    # stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
+    stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
 
     dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat, device=audio.device)
     dft_mat_real = dft_mat.real
@@ -195,13 +195,12 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
         log_spec = (log_spec + 4.0) / 4.0
         return log_spec
 
-    log_spec_ = melify(spectify(audio))
-    log_spec__ = mel_spectify(unfold_input(audio))
-    maxdif = (log_spec_ - log_spec__).abs().max()
-    print(f"{maxdif=}")
-    assert maxdif < 1e-4
-    # assert torch.equal(log_spec_, log_spec__)
-    raise Exception
+    # log_spec_ = melify(spectify(audio))
+    # log_spec__ = mel_spectify(unfold_input(audio))
+    # maxdif = (log_spec_ - log_spec__).abs().max()
+    # print(f"{maxdif=}")
+    # assert maxdif < 1e-4
+    # raise Exception
 
     # max_diff = (log_spec - log_spec_).abs().max()
     # print(f"{(log_spec == log_spec_).all()=} {torch.allclose(log_spec, log_spec_)=} {max_diff=}")
@@ -210,26 +209,26 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     # print(f"{audio.shape=} {log_spec.shape=}")
     # raise Exception
 
-    class wrapper_melspec(torch.nn.Module):
-        def forward(self, a):
-            return mel_spectify(a)
+    # class wrapper_melspec(torch.nn.Module):
+    #     def forward(self, a):
+    #         return mel_spectify(a)
 
-    torch.onnx.export(
-        wrapper_melspec(),
-        unfold_input(audio),
-        "melspec.onnx",
-        verbose=False,
-        opset_version=13,
-        input_names=["audio"],
-        output_names=["mel_spectrogram"],
-        dynamic_axes={
-            "audio": [0],
-            "mel_spectrogram": [1],
-        }
-    )
-    raise Exception
+    # torch.onnx.export(
+    #     wrapper_melspec(),
+    #     unfold_input(audio),
+    #     "melspec.onnx",
+    #     verbose=False,
+    #     opset_version=13,
+    #     input_names=["audio"],
+    #     output_names=["mel_spectrogram"],
+    #     dynamic_axes={
+    #         "audio": [0],
+    #         "mel_spectrogram": [1],
+    #     }
+    # )
+    # raise Exception
 
-    # log_spec = melify(stft)
+    log_spec = melify(stft)
 
 
     return log_spec
