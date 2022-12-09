@@ -75,8 +75,10 @@ class MultiHeadAttention(nn.Module):
         kv_cache: Optional[Tensor] = None,
         af_cache_write: Optional[Tensor] = None,
         af_cache_read: Optional[Tensor] = None,
+        encoder = False
     ):
-        q = self.query(x)
+
+        
 
         # if kv_cache is None or xa is None or self.key not in kv_cache:
         #     # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
@@ -85,20 +87,26 @@ class MultiHeadAttention(nn.Module):
             if af_cache_read is None:
                 k = self.key(xa)
                 v = self.value(xa)
-                af_cache_write[self.layer_id - 13] = k
-                af_cache_write[self.layer_id - 13 + 1] = v
+                # af_cache_write[self.layer_id - 13, :, :, :] = k
+                # af_cache_write[self.layer_id - 13 + 1, :, :, :] = v
+                if encoder:
+                    return [k, v]
+                # print(f"1st {af_cache_write.shape=}")
             else:
                 # k_ = self.key(xa)
                 # v_ = self.value(xa)
                 k = af_cache_read[self.layer_id - 13]
                 v = af_cache_read[self.layer_id - 13 + 1]
+                # print("2nd")
                 # assert (k_ == k).all()
                 # assert (v_ == v).all()
 
         else:
             k = self.key(x)
             v = self.value(x)
+            # print("3rd")
             if kv_cache is not None:
+                # print("4th")
                 key_id = self.layer_id - 4 - 8
                 value_id = key_id + 1
                 size = k.shape[1]
@@ -107,6 +115,8 @@ class MultiHeadAttention(nn.Module):
                 k = kv_cache[key_id]
                 v = kv_cache[value_id]
 
+        assert not encoder
+        q = self.query(x)
         # else:
         #     # for cross-attention, calculate keys and values once and reuse in subsequent calls.
         #     k = kv_cache[self.key]
@@ -152,7 +162,11 @@ class ResidualAttentionBlock(nn.Module):
         kv_cache: Optional[Tensor] = None,
         af_cache_write: Optional[Tensor] = None,
         af_cache_read: Optional[Tensor] = None,
+        encoder = False,
     ):
+        if encoder:
+            return self.cross_attn(None, xa, kv_cache=None, af_cache_write=af_cache_write, af_cache_read=None, encoder=True)
+
         x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache, af_cache_write=af_cache_write)
         if self.cross_attn:
             x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache, af_cache_write=af_cache_write, af_cache_read=af_cache_read)
@@ -206,13 +220,22 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None):
+    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None, encoder = False):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
         xa : torch.Tensor, shape = (batch_size, n_mels, n_audio_ctx)
             the encoded audio features to be attended on
         """
+        if encoder:
+            kv_lst = []
+            for block in self.blocks:
+                kv_lst += block(None, xa, mask=None, kv_cache=None, af_cache_write=af_cache_write, af_cache_read=None, encoder=True)
+            af_cache_write2 = torch.stack(kv_lst, dim=0)
+            # assert torch.equal(af_cache_write2, af_cache_write)
+            return None, None, af_cache_write2
+
+            
         x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
         audio_tensor = xa if xa is not None else af_cache_read
         x = x.to(audio_tensor.dtype)

@@ -686,16 +686,9 @@ class DecodingTask:
                     self.kv_cache = kv_cache
                     self.af_cache_write = af_cache_write
 
-                # def forward(self, mel):
-                def forward(self, audio_features):
-                    offset = 0
-                    # print(f"{mel.device=}")
-                    # audio_features = self.encoder(mel)
-                    # print("%%%%%%%%%%%%%%%%%%")
-                    # print(self.tokens.device, audio_features.device, kv_cache.device, torch.tensor(offset, device=mel.device).device, af_cache_write.device)
-                    # print("$$$$$$$$$$$$$$$$$$")
-                    # return audio_features
-                    _, __, ___ = self.decoder(self.tokens, audio_features, kv_cache=self.kv_cache, offset=torch.tensor(offset, device=mel.device), af_cache_write=self.af_cache_write, af_cache_read=None)
+                def forward(self, mel):
+                    audio_features = self.encoder(mel)
+                    _, __, ___ = self.decoder(self.tokens, audio_features, kv_cache=self.kv_cache, offset=torch.tensor(0, device=audio_features.device), af_cache_write=self.af_cache_write, af_cache_read=None, encoder=True)
                     return ___
 
             # mel.shape=torch.Size([2, 80, 3000]) af_cache.shape=torch.Size([24, 2, 1500, 768])
@@ -707,13 +700,10 @@ class DecodingTask:
             af_cache_write = self.model.new_af_cache(n_group, device, dtype)
 
             w = wrapper_encoder(self.model.decoder, self.model.encoder, tokens, kv_cache, af_cache_write)
-            # o = w(mel)
-            # print(o)
-            # raise Exception
 
             torch.onnx.export(
                 w,
-                self.model.encoder(mel),
+                mel,
                 "encoder.onnx",
                 verbose=False,
                 opset_version=13,
@@ -730,8 +720,7 @@ class DecodingTask:
             audio_features = self.model.encoder(mel)
             _, __, af_cache = self.inference.logits(tokens, audio_features=audio_features)
             # print(f"{mel.shape=} {af_cache.shape=}")
-            print(f"{mel=} {af_cache=}")
-            raise Exception
+            # raise Exception
             self.inference.actual_cleanup_caching()
             # self.model.decoder()
 
@@ -799,7 +788,7 @@ class DecodingTask:
 
         tokens: Tensor = torch.tensor([self.initial_tokens], device=mel.device).repeat(n_audio, 1)
         audio_features, audio_feature_cache = self._get_audio_feature_cache(mel, tokens)  # encoder forward pass
-        raise Exception
+        # raise Exception
 
         # detect language if requested, overwriting the language token
         languages, language_probs = self._detect_language(audio_features, tokens)
