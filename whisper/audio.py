@@ -111,12 +111,15 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
             audio = load_audio(audio)
         audio = torch.from_numpy(audio)
 
+    audio = audio.to('cuda')
     window = torch.hann_window(N_FFT).to(audio.device)
-    stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
+    # stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
 
-    # dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat)
+    dft_mat = torch.fft.fft(torch.eye(N_FFT, dtype=torch.float64), dim=-1).to(dtype=torch.cfloat, device=audio.device)
+    dft_mat_real = dft_mat.real
+    dft_mat_imag = dft_mat.imag
 
-    def specify(input):
+    def spectify(input):
         signal_dim = input.dim()
         extended_shape = [1] * (3 - signal_dim) + list(input.size())
         pad = int(N_FFT // 2)
@@ -125,17 +128,20 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
         input = input.view(input.shape[-signal_dim:])
 
         windowed = input.unfold(dimension=0, size=N_FFT, step=HOP_LENGTH) * window
-        return (torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat)[:, :201].T
-    
+        ans = torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat
+        return ans[:, :201].T
+
     # print(f"{(stft == stft_).all()=} {torch.allclose(stft, stft_)=} {max_diff=}")
     # assert torch.allclose(stft, stft_)
     # print(f"{audio.shape} {stft.shape=} {dft_mat.shape=} {windowed.shape=} {window.shape=} {N_FFT=}, {HOP_LENGTH=}")
     # raise Exception
 
+    filters = torch.tensor(mel_filters(audio.device, n_mels))
+
     def melify(stft):
         magnitudes = stft[:, :-1].abs() ** 2
 
-        filters = mel_filters(audio.device, n_mels)
+        # filters = mel_filters(audio.device, n_mels)
         mel_spec = filters @ magnitudes
 
         log_spec = torch.clamp(mel_spec, min=1e-10).log10()
@@ -143,16 +149,87 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
         log_spec = (log_spec + 4.0) / 4.0
         return log_spec
 
-    log_spec = melify(stft)
-    # log_spec_ = melify(specify(audio))
+    def unfold_input(input):
+        signal_dim = input.dim()
+        extended_shape = [1] * (3 - signal_dim) + list(input.size())
+        pad = int(N_FFT // 2)
+        print(f"{input.shape=} {signal_dim=} {extended_shape=} {pad=} {N_FFT=} {HOP_LENGTH=}")
+        input = torch.nn.functional.pad(audio.view(extended_shape), [pad, pad], 'reflect')
+        print(f"{input.shape[-signal_dim:]=} {signal_dim=} {input.shape=}")
+        input = input.view(input.shape[-signal_dim:])
+        result = input.unfold(dimension=0, size=N_FFT, step=HOP_LENGTH)
+        print(f"{result.shape=} {input.shape}")
+        return result
+    
+    def mel_spectify(input):
+
+        windowed = input * window
+        # ans = torch.complex(windowed, torch.zeros_like(windowed)) @ dft_mat
+        ans_r = windowed @ dft_mat_real
+        ans_i = windowed @ dft_mat_imag
+        # maxdif_r = (ans.real - ans_r).abs().max()
+        # maxdif_i = (ans.imag - ans_i).abs().max()
+        # print(f"{ans.real.shape=} {maxdif_r=} {maxdif_i=} {ans_r.shape=}")
+        # assert maxdif_r < 1e-5 # torch.allclose(ans.real, ans_r)
+        # assert  maxdif_i < 1e-5 # torch.allclose(ans.imag, ans_i)
+        # raise Exception
+        magnitudes2 = torch.transpose(ans_r[:-1, :201], -1, -2)**2 + torch.transpose(ans_i[:-1, :201], -1, -2)**2
+        magnitudes = magnitudes2
+        # stft = ans[:, :201].T
+        # magnitudes = stft[:, :-1].abs() ** 2
+        # maxdif = (magnitudes - magnitudes2).abs().max()
+        # print(f"{maxdif=}")
+        # assert maxdif < 2e-5 # torch.equal(magnitudes, magnitudes2)
+        # raise Exception
+
+        mel_spec = filters @ magnitudes
+
+        log_spec = torch.clamp(mel_spec, min=1e-10).log10()
+        log_spec = torch.maximum(log_spec, torch.max(log_spec) - 8.0)
+
+        # dif = (log_spec-log_spec_).abs().max()
+        # print(f"{dif=} {log_spec.max()=} {log_spec.min()=} {dif.device=}")
+        # assert torch.equal(log_spec, log_spec_)
+        # raise Exception
+
+        log_spec = (log_spec + 4.0) / 4.0
+        return log_spec
+
+    log_spec_ = melify(spectify(audio))
+    log_spec__ = mel_spectify(unfold_input(audio))
+    maxdif = (log_spec_ - log_spec__).abs().max()
+    print(f"{maxdif=}")
+    assert maxdif < 1e-4
+    # assert torch.equal(log_spec_, log_spec__)
+    raise Exception
 
     # max_diff = (log_spec - log_spec_).abs().max()
     # print(f"{(log_spec == log_spec_).all()=} {torch.allclose(log_spec, log_spec_)=} {max_diff=}")
     # assert max_diff.item() < 4e-5
 
+    # print(f"{audio.shape=} {log_spec.shape=}")
     # raise Exception
 
+    class wrapper_melspec(torch.nn.Module):
+        def forward(self, a):
+            return mel_spectify(a)
 
+    torch.onnx.export(
+        wrapper_melspec(),
+        unfold_input(audio),
+        "melspec.onnx",
+        verbose=False,
+        opset_version=13,
+        input_names=["audio"],
+        output_names=["mel_spectrogram"],
+        dynamic_axes={
+            "audio": [0],
+            "mel_spectrogram": [1],
+        }
+    )
+    raise Exception
+
+    # log_spec = melify(stft)
 
 
     return log_spec
