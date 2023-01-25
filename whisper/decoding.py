@@ -12,6 +12,7 @@ from torch.distributions import Categorical
 from .audio import CHUNK_LENGTH
 from .tokenizer import Tokenizer, get_tokenizer
 from .utils import compression_ratio
+from itertools import count
 
 if TYPE_CHECKING:
     from .model import Whisper
@@ -136,6 +137,8 @@ class PyTorchInference(Inference):
         self.kv_cache = None
         self.saved_tokens = []
         self.saved_logits = []
+        self.saved_tokens2 = []
+        self.saved_logits2 = []
 
     def logits(self, tokens: Tensor, audio_features: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None) -> Tensor:
         n_group = tokens.shape[0]
@@ -166,24 +169,32 @@ class PyTorchInference(Inference):
                         af_cache_write=af_cache_write,
                         af_cache_read=af_cache_read
                         )
-
-        self.saved_tokens.append(tokens)
-        self.saved_logits.append(logits)
+        print(f"{tokens.shape=} {logits.shape=}")
+        self.saved_tokens.append(tokens[0])
+        self.saved_logits.append(logits[0, :, :])
+        self.saved_tokens2.append(tokens[1])
+        self.saved_logits2.append(logits[1, :, :])
         return logits, kv_cache, af_cache
 
     def actual_cleanup_caching(self):
         self.kv_cache = None
         self.saved_tokens = []
         self.saved_logits = []
+        self.saved_tokens2 = []
+        self.saved_logits2 = []
 
     def cleanup_caching(self):
         # raise Exception
         # self.kv_cache = None
 
-        self.actual_cleanup_caching()
 
         def cmpi(dt, t):
-            assert dt.shape == t.shape
+            # assert dt.shape == t.shape
+            
+            if dt.shape != t.shape:
+                print(f"{dt.shape=} {t.shape=}")
+                assert dt.shape == t.shape
+
             ex = torch.all(dt == t).item()
             if not ex:
                 maxdiff = (dt - t).abs().max().item()
@@ -201,9 +212,10 @@ class PyTorchInference(Inference):
                 # raise Exception
                 print(f"{dt-t=}")
 
-        # raise Exception
         # with open('tokens_logits2.pickle', 'wb') as f:
         #     pickle.dump({'tokens': self.saved_tokens, 'logits': self.saved_logits}, f)
+        # raise Exception
+
         print("opening pickle")
         with open('tokens_logits.pickle', 'rb') as f:
             with open('tokens_logits2.pickle', 'rb') as f2:
@@ -214,13 +226,19 @@ class PyTorchInference(Inference):
                 correct_tokens2 = pickle_dict2['tokens']
                 correct_logits2 = pickle_dict2['logits']
                 # i = 0
-                for correct_t, correct_t2, current_t, correct_l, correct_l2, current_l in zip(correct_tokens, correct_tokens2, self.saved_tokens, correct_logits, correct_logits2, self.saved_logits):
-                    cmpi(torch.stack((correct_t, correct_t2), dim=0), current_t)
-                    cmpf(torch.stack((correct_l, correct_t2), dim=0), current_l)
-                    # print(i)
+                # print(f"{pickle_dict2=}")
+                # print(f"{len(self.saved_tokens2)=} {len(self.saved_tokens2)=}")
+                # print(*map(len, (correct_tokens, correct_tokens2, self.saved_tokens, self.saved_tokens2, correct_logits, correct_logits2, self.saved_logits, self.saved_logits2)))
+                for i, correct_t, correct_t2, current_t, current_t2, correct_l, correct_l2, current_l, current_l2 in zip(count(0), correct_tokens, correct_tokens2, self.saved_tokens, self.saved_tokens2, correct_logits, correct_logits2, self.saved_logits, self.saved_logits2):
+                    cmpi(correct_t.squeeze(0), current_t)
+                    cmpi(correct_t2.squeeze(0), current_t2)
+                    cmpf(correct_l.squeeze(0), current_l)
+                    cmpf(correct_l2.squeeze(0), current_l2)
+                    print(i)
                     # i+=1
 
         print("past test")
+        self.actual_cleanup_caching()
 
     def rearrange_kv_cache(self, source_indices):
         for module, tensor in self.kv_cache.items():
@@ -323,11 +341,10 @@ class GreedyDecoder(TokenDecoder):
         self.eot = eot
 
     def update(self, tokens: Tensor, logits: Tensor, sum_logprobs: Tensor) -> Tuple[Tensor, bool]:
-        temperature = self.temperature
-        if temperature == 0:
+        if self.temperature == 0:
             next_tokens = logits.argmax(dim=-1)
         else:
-            next_tokens = Categorical(logits=logits / temperature).sample()
+            next_tokens = Categorical(logits=logits / self.temperature).sample()
 
         logprobs = F.log_softmax(logits.float(), dim=-1)
         current_logprobs = logprobs[torch.arange(logprobs.shape[0]), next_tokens]
@@ -582,10 +599,8 @@ class DecodingTask:
 
     def _get_initial_tokens(self) -> Tuple[int]:
         tokens = list(self.sot_sequence)
-        prefix = self.options.prefix
-        prompt = self.options.prompt
 
-        if prefix:
+        if prefix := self.options.prefix:
             prefix_tokens = (
                 self.tokenizer.encode(" " + prefix.strip()) if isinstance(prefix, str) else prefix
             )
@@ -594,7 +609,7 @@ class DecodingTask:
                 prefix_tokens = prefix_tokens[-max_prefix_len:]
             tokens = tokens + prefix_tokens
 
-        if prompt:
+        if prompt := self.options.prompt:
             prompt_tokens = (
                 self.tokenizer.encode(" " + prompt.strip()) if isinstance(prompt, str) else prompt
             )
@@ -663,7 +678,7 @@ class DecodingTask:
         n_batch = tokens.shape[0]
         sum_logprobs: Tensor = torch.zeros(n_batch, device=audio_feature_cache.device)
         no_speech_probs = [np.nan] * n_batch
-        # print(f"{audio_features=}")
+        # print(f"{audio_features.shape=} {tokens=}")
 
         try:
             for i in range(self.sample_len):
@@ -783,14 +798,13 @@ def decode(model: "Whisper", mel: Tensor, options: DecodingOptions = DecodingOpt
         The result(s) of decoding contained in `DecodingResult` dataclass instance(s)
     """
     mel = torch.stack((mel, mel2), dim=0)
+    # mel = mel2
     
-    single = mel.ndim == 2
-    if single:
+    # single = mel.ndim == 2
+    if single := mel.ndim == 2:
         mel = mel.unsqueeze(0)
 
     result = DecodingTask(model, options).run(mel)
-    
-    if single:
-        result = result[0]
 
     return result
+    # return result[0] if single else result

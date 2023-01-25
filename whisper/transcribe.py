@@ -117,17 +117,22 @@ def transcribe(
 
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result_list = model.decode(segment, options, segment2)
-
-            decode_result = decode_result_list[1]
+            for i, decode_result in enumerate(decode_result_list):
+                print(f"{i} {decode_result.tokens=}")
+            decode_result = decode_result_list[0]
             needs_fallback = False
             if compression_ratio_threshold is not None and decode_result.compression_ratio > compression_ratio_threshold:
+                assert 0, "Not reached"
                 needs_fallback = True  # too repetitive
             if logprob_threshold is not None and decode_result.avg_logprob < logprob_threshold:
+                assert 0, "Not reached"
                 needs_fallback = True  # average log probability is too low
 
             if not needs_fallback:
                 break
 
+        for decode_result in decode_result_list:
+            print(tokenizer.decode([token for token in decode_result.tokens if token < tokenizer.eot]))
         return decode_result
 
     seek = 0
@@ -183,6 +188,7 @@ def transcribe(
 
             decode_options["prompt"] = all_tokens[prompt_reset_since:]
             result: DecodingResult = decode_with_fallback(segment, segment2)
+            break
             tokens = torch.tensor(result.tokens)
 
             if no_speech_threshold is not None:
@@ -221,6 +227,7 @@ def transcribe(
                 seek += last_timestamp_position * input_stride
                 all_tokens.extend(tokens[: last_slice + 1].tolist())
             else:
+                assert 0, "not reached"
                 duration = segment_duration
                 timestamps = tokens[timestamp_tokens.nonzero().flatten()]
                 if len(timestamps) > 0 and timestamps[-1].item() != tokenizer.timestamp_begin:
