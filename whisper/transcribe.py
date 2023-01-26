@@ -117,12 +117,16 @@ def transcribe(
 
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result_list = model.decode(segment, options, segment2)
+            for decode_result in decode_result_list:
+                print(tokenizer.decode([token for token in decode_result.tokens if token < tokenizer.eot]))
 
             decode_result = decode_result_list[1]
             needs_fallback = False
             if compression_ratio_threshold is not None and decode_result.compression_ratio > compression_ratio_threshold:
+                assert 0, "Not Reached"
                 needs_fallback = True  # too repetitive
             if logprob_threshold is not None and decode_result.avg_logprob < logprob_threshold:
+                assert 0, "Not Reached"
                 needs_fallback = True  # average log probability is too low
 
             if not needs_fallback:
@@ -149,6 +153,7 @@ def transcribe(
     def add_segment(
         *, start: float, end: float, text_tokens: torch.Tensor, result: DecodingResult
     ):
+        print(f"{text_tokens=}")
         text = tokenizer.decode([token for token in text_tokens if token < tokenizer.eot])
         if len(text.strip()) == 0:  # skip empty text output
             return

@@ -111,6 +111,8 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
             audio = load_audio(audio)
         audio = torch.from_numpy(audio)
 
+    # print(f"{audio.shape=} {audio[100:120]=}")
+    # raise Exception
     # audio = audio.to('cuda')
     window = torch.hann_window(N_FFT).to(audio.device)
     stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
@@ -193,13 +195,14 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
         # raise Exception
 
         log_spec = (log_spec + 4.0) / 4.0
-        return log_spec
+        return log_spec.half()
 
-    # log_spec_ = melify(spectify(audio))
-    # log_spec__ = mel_spectify(unfold_input(audio))
+    # log_spec_ = melify(spectify(audio)).half()
+    log_spec__ = mel_spectify(unfold_input(audio))
+    # return log_spec__
     # maxdif = (log_spec_ - log_spec__).abs().max()
     # print(f"{maxdif=}")
-    # assert maxdif < 1e-4
+    # assert maxdif < 1e-3
     # raise Exception
 
     # max_diff = (log_spec - log_spec_).abs().max()
@@ -216,7 +219,7 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     # torch.onnx.export(
     #     wrapper_melspec(),
     #     unfold_input(audio),
-    #     "melspec.onnx",
+    #     "melspec13.onnx",
     #     verbose=False,
     #     opset_version=13,
     #     input_names=["audio"],
@@ -229,6 +232,8 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     # raise Exception
 
     log_spec = melify(stft)
+    print(f"{log_spec.shape=} {stft.shape=}")
+    # raise Exception
 
-
-    return log_spec
+    return log_spec__
+    # return log_spec
