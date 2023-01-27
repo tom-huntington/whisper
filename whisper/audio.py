@@ -111,7 +111,11 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
             audio = load_audio(audio)
         audio = torch.from_numpy(audio)
 
-    # print(f"{audio.shape=} {audio[100:120]=}")
+    # torch.set_printoptions(profile="full")
+    # torch.set_printoptions(linewidth=200)
+
+    # torch.set_printoptions(threshold=10_000)
+    # print(f"{audio.shape=}\n{audio=}")
     # raise Exception
     # audio = audio.to('cuda')
     window = torch.hann_window(N_FFT).to(audio.device)
@@ -232,7 +236,9 @@ def log_mel_spectrogram(audio: Union[str, np.ndarray, torch.Tensor], n_mels: int
     # raise Exception
 
     log_spec = melify(stft)
-    print(f"{log_spec.shape=} {stft.shape=}")
+
+    # print(f"{log_spec.shape=} {stft.shape=}")
+    # print(f"{log_spec.shape=} {log_spec.view(-1)[1000:1010]=}")
     # raise Exception
 
     return log_spec__

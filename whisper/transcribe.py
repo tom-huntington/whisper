@@ -82,8 +82,9 @@ def transcribe(
     if dtype == torch.float32:
         decode_options["fp16"] = False
 
-    mel = log_mel_spectrogram(audio)
+    print(f"{audio2=}")
     mel2 = log_mel_spectrogram(audio2)
+    mel = log_mel_spectrogram(audio)
 
     if decode_options.get("language", None) is None:
         if not model.is_multilingual:

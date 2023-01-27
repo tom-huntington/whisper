@@ -12,6 +12,7 @@ from torch.distributions import Categorical
 from .audio import CHUNK_LENGTH
 from .tokenizer import Tokenizer, get_tokenizer
 from .utils import compression_ratio
+from math import prod
 
 if TYPE_CHECKING:
     from .model import Whisper
@@ -148,13 +149,26 @@ class PyTorchInference(Inference):
         af_cache_write = self.model.new_af_cache(n_group, device, dtype) if af_cache_read is None else None
 
         if self.kv_cache is None:
-            self.kv_cache = self.model.new_kv_cache(n_group, self.initial_token_length, device, dtype)
-            offset = 0
+            kv_cache_write = self.model.new_kv_cache(n_group, self.initial_token_length, device, dtype)
+            shp = list(kv_cache_write.shape)
+            shp[-2] = 0
+            kv_cache_read = torch.empty(shp, device=device, dtype=dtype)
+            # offset_ = 0
         else:
             # print(f"{n_group=}")
-            offset = self.kv_cache.shape[2]
-            new_kv_cache2 = torch.cat((self.kv_cache, self.model.new_kv_cache(n_group, 1, device, dtype)), dim=-2)
-            self.kv_cache = new_kv_cache2
+            # offset_ = self.kv_cache.shape[2]
+            kv_cache_write = self.model.new_kv_cache(n_group, 1, device, dtype)
+            kv_cache_read = self.kv_cache
+            # new_kv_cache2 = torch.cat((self.kv_cache, ..), dim=-2)
+            # self.kv_cache = new_kv_cache2
+
+        print(f"{tokens.shape=} {kv_cache_write.shape=}")
+        assert tokens.shape[-1] - kv_cache_read.shape[2] == kv_cache_write.shape[-2]
+        (kv_write_shape := list(kv_cache_read.shape)).__setitem__(-2, tokens.shape[-1] - kv_cache_read.shape[2])
+        print(f"{kv_write_shape=} {kv_cache_write.shape=}")
+        assert torch.Size(kv_write_shape) == kv_cache_write.shape
+        # offset = kv_cache_read.shape[2]
+        # assert offset == offset_
 
         if tokens.shape[-1] > self.initial_token_length:
             # only need to use the last token except in the first forward pass
@@ -172,9 +186,10 @@ class PyTorchInference(Inference):
             #         self.model_decoder = model_decoder
             #         self.timestamp_begin = timestamp_begin
 
-            #     def forward(self, tokens, kv_cache, offset, af_cache_read):
+            #     def forward(self, tokens, kv_cache_read, kv_cache_write, af_cache_read):
 
-            #         logits, output_kv_cache, ___ = self.model_decoder(tokens, None, kv_cache=kv_cache, offset=offset, af_cache_write=None, af_cache_read=af_cache_read)
+            #         logits, output_kv_cache, ___ = self.model_decoder(tokens, None, kv_cache_read=kv_cache_read, kv_cache_write=kv_cache_write, #offset=offset,
+            #                                                             af_cache_write=None, af_cache_read=af_cache_read)
             #         # print(f"{logits.shape=} {tokens.shape=}")
             #         # raise Exception
             #         logits_ = logits[:, -1, :]
@@ -191,15 +206,17 @@ class PyTorchInference(Inference):
             # # raise Exception
             # torch.onnx.export(
             #     w,
-            #     (tokens, self.kv_cache, torch.tensor(offset), af_cache_read),
+            #     (tokens, kv_cache_read, kv_cache_write, # torch.tensor(offset),
+            #         af_cache_read),
             #     "decoder.onnx",
             #     verbose=False,
             #     opset_version=13,
-            #     input_names=["tokens", "kv_cache", "offset", "af_cache_read"],
+            #     input_names=["tokens", "kv_cache_read", "kv_cache_write", "af_cache_read"],
             #     output_names=["logits", "output_kv_cache", "token", "ts_token"],
             #     dynamic_axes={
             #         "tokens": [0, 1],
-            #         "kv_cache": [1, 2],
+            #         "kv_cache_read": [1, 2],
+            #         "kv_cache_write": [1, 2],
             #         "af_cache_read": [1],
             #         "logits": [0, 1],
             #         "output_kv_cache": [1, 2],
@@ -216,14 +233,29 @@ class PyTorchInference(Inference):
         #     assert audio_features is None
         #     print(f"{tokens.shape=} {self.kv_cache.shape=} {af_cache_read.shape=}")
 
+        print(f"{kv_cache_read.shape=} {kv_cache_write.shape=}")
         logits, kv_cache, af_cache = self.model.decoder(
-                        tokens,
-                        audio_features,
-                        kv_cache=self.kv_cache,
-                        offset=torch.tensor(offset),
+                        x=tokens,
+                        xa=audio_features,
+                        kv_cache_read=kv_cache_read,
+                        kv_cache_write=kv_cache_write,
+                        # offset=torch.tensor(offset),
                         af_cache_write=af_cache_write,
                         af_cache_read=af_cache_read
                         )
+        self.kv_cache = kv_cache
+        print(f"{kv_cache.shape=}\n")
+
+        # logits_ = logits[:, -1, :]
+        # logits_clone = torch.clone(logits_)  # <----add this
+        # logits_clone[:, :self.timestamp_begin] = -np.inf  # <----add this
+        # ts_token = torch.argmax(logits_clone,  dim=-1)  # <----add this
+        # token = torch.argmax(logits_, dim=-1)
+        # print(f"{logits.view(-1)[:10]}")
+        # print(f"{token=} {ts_token=}")
+
+
+        # print(f"{offset=} {tokens.shape=}")
         # if af_cache is not None:
         #     print(f"{logits.shape=} {kv_cache.shape=} {af_cache.shape=}\n")
         # else:
@@ -698,17 +730,26 @@ class DecodingTask:
             raise Exception
         else:
             class wrapper_encoder(torch.nn.Module):
-                def __init__(self, decoder, encoder, tokens, kv_cache, af_cache_write):
+                def __init__(self, decoder, encoder, tokens, af_cache_write):
                     super().__init__()
                     self.decoder = decoder
                     self.encoder = encoder
                     self.tokens = tokens
-                    self.kv_cache = kv_cache
+                    # self.kv_cache = kv_cache
                     self.af_cache_write = af_cache_write
 
                 def forward(self, mel):
                     audio_features = self.encoder(mel)
-                    _, __, ___ = self.decoder(self.tokens, audio_features, kv_cache=self.kv_cache, offset=torch.tensor(0, device=audio_features.device), af_cache_write=self.af_cache_write, af_cache_read=None, encoder=True)
+                    _, __, ___ = self.decoder(
+                                    self.tokens,
+                                    audio_features,
+                                    kv_cache_read=None,
+                                    kv_cache_write=None,
+                                    # offset=torch.tensor(0, device=audio_features.device),
+                                    af_cache_write=self.af_cache_write,
+                                    af_cache_read=None,
+                                    encoder=True
+                                )
                     return ___
 
             # mel.shape=torch.Size([2, 80, 3000]) af_cache.shape=torch.Size([24, 2, 1500, 768])
@@ -716,10 +757,10 @@ class DecodingTask:
             device = tokens.device
             dtype = mel.dtype
             # print(f"{device=} {dtype=}")
-            kv_cache = self.model.new_kv_cache(n_group, 3, device, dtype)
+            # kv_cache = self.model.new_kv_cache(n_group, 3, device, dtype)
             af_cache_write = self.model.new_af_cache(n_group, device, dtype)
 
-            w = wrapper_encoder(self.model.decoder, self.model.encoder, tokens, kv_cache, af_cache_write)
+            w = wrapper_encoder(self.model.decoder, self.model.encoder, tokens, af_cache_write)
 
             # torch.onnx.export(
             #     w,
@@ -739,6 +780,16 @@ class DecodingTask:
 
             audio_features = self.model.encoder(mel)
             af_cache = w(mel)
+            # torch.set_printoptions(profile="full")
+            # torch.set_printoptions(linewidth=180)
+
+            # print(f"{prod(mel.shape)=}")
+            # mel.detach().float().cpu().numpy().tofile('/mnt/d/junk/mel')
+
+            # raise Exception
+            # print(f"{mel=}")
+            # print(f"{af_cache.view(-1)[:10]=}")
+            # raise Exception
 
             self.inference.actual_cleanup_caching()
             # self.model.decoder()
@@ -890,6 +941,7 @@ def decode(model: "Whisper", mel: Tensor, options: DecodingOptions = DecodingOpt
         The result(s) of decoding contained in `DecodingResult` dataclass instance(s)
     """
     mel = torch.stack((mel, mel2), dim=0)
+    # mel = mel2
     
     single = mel.ndim == 2
     if single:

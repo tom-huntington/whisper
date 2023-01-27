@@ -220,7 +220,7 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None, encoder = False):
+    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache_read: Tensor, kv_cache_write: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None, encoder = False):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
@@ -228,6 +228,8 @@ class TextDecoder(nn.Module):
             the encoded audio features to be attended on
         """
         if encoder:
+            assert kv_cache_read is None
+            assert kv_cache_write is None
             kv_lst = []
             for block in self.blocks:
                 kv_lst += block(None, xa, mask=None, kv_cache=None, af_cache_write=af_cache_write, af_cache_read=None, encoder=True)
@@ -235,7 +237,9 @@ class TextDecoder(nn.Module):
             # assert torch.equal(af_cache_write2, af_cache_write)
             return None, None, af_cache_write2
 
-            
+        kv_cache = torch.cat((kv_cache_read, kv_cache_write), dim=-2)
+        offset = kv_cache_read.shape[2]
+
         x = self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]]
         audio_tensor = xa if xa is not None else af_cache_read
         x = x.to(audio_tensor.dtype)
@@ -248,8 +252,8 @@ class TextDecoder(nn.Module):
 
         return logits, kv_cache, af_cache_write
 
-    def forward_encoder(self, x: Tensor, xa: Tensor, kv_cache: Tensor, offset: Tensor, af_cache_write: Optional[Tensor] = None):
-        _, __, af_cache_write_out = self.forward(x, xa, kv_cache, offset, af_cache_write, af_cache_read=None)
+    def forward_encoder(self, x: Tensor, xa: Tensor, kv_cache: Tensor, af_cache_write: Optional[Tensor] = None):
+        _, __, af_cache_write_out = self.forward(x, xa, kv_cache, af_cache_write, af_cache_read=None)
         return af_cache_write_out
 
 
