@@ -220,7 +220,7 @@ class TextDecoder(nn.Module):
         mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache_read: Tensor, kv_cache_write: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None, encoder = False):
+    def forward(self, x: Tensor, xa: Optional[Tensor], kv_cache_read: Tensor, af_cache_write: Optional[Tensor] = None, af_cache_read: Optional[Tensor] = None, encoder = False):
         """
         x : torch.LongTensor, shape = (batch_size, <= n_ctx)
             the text tokens
@@ -229,13 +229,18 @@ class TextDecoder(nn.Module):
         """
         if encoder:
             assert kv_cache_read is None
-            assert kv_cache_write is None
             kv_lst = []
             for block in self.blocks:
                 kv_lst += block(None, xa, mask=None, kv_cache=None, af_cache_write=af_cache_write, af_cache_read=None, encoder=True)
             af_cache_write2 = torch.stack(kv_lst, dim=0)
             # assert torch.equal(af_cache_write2, af_cache_write)
             return None, None, af_cache_write2
+
+        # print(f"{x.shape=} {kv_cache_read.shape=}")
+        (kv_write_shape := list(kv_cache_read.shape)).__setitem__(-2, x.shape[-1])
+        kv_cache_write = torch.zeros(kv_write_shape, dtype=kv_cache_read.dtype, device=kv_cache_read.device)
+        # assert kv_cache_write_.equal(kv_cache_write)
+        
 
         kv_cache = torch.cat((kv_cache_read, kv_cache_write), dim=-2)
         offset = kv_cache_read.shape[2]

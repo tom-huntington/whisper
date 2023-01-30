@@ -162,11 +162,11 @@ class PyTorchInference(Inference):
             # new_kv_cache2 = torch.cat((self.kv_cache, ..), dim=-2)
             # self.kv_cache = new_kv_cache2
 
-        print(f"{tokens.shape=} {kv_cache_write.shape=}")
-        assert tokens.shape[-1] - kv_cache_read.shape[2] == kv_cache_write.shape[-2]
-        (kv_write_shape := list(kv_cache_read.shape)).__setitem__(-2, tokens.shape[-1] - kv_cache_read.shape[2])
-        print(f"{kv_write_shape=} {kv_cache_write.shape=}")
-        assert torch.Size(kv_write_shape) == kv_cache_write.shape
+        # print(f">>> {tokens.shape=} {kv_cache_write.shape=}")
+        # assert tokens.shape[-1] - kv_cache_read.shape[2] == kv_cache_write.shape[-2]
+        # (kv_write_shape := list(kv_cache_read.shape)).__setitem__(-2, tokens.shape[-1] - kv_cache_read.shape[2])
+        # print(f"{kv_write_shape=} {kv_cache_write.shape=} {torch.Size(kv_write_shape) == kv_cache_write.shape}")
+        # assert torch.Size(kv_write_shape) == kv_cache_write.shape
         # offset = kv_cache_read.shape[2]
         # assert offset == offset_
 
@@ -180,51 +180,53 @@ class PyTorchInference(Inference):
             # logits.shape=torch.Size([2, 1, 51865]) kv_cache.shape=torch.Size([24, 2, 4, 768])
 
             # --------------
-            # class wrapper(torch.nn.Module):
-            #     def __init__(self, model_decoder, timestamp_begin):
-            #         super().__init__()
-            #         self.model_decoder = model_decoder
-            #         self.timestamp_begin = timestamp_begin
+            class wrapper(torch.nn.Module):
+                def __init__(self, model_decoder, timestamp_begin):
+                    super().__init__()
+                    self.model_decoder = model_decoder
+                    self.timestamp_begin = timestamp_begin
 
-            #     def forward(self, tokens, kv_cache_read, kv_cache_write, af_cache_read):
+                def forward(self, tokens, kv_cache_read, af_cache_read):
 
-            #         logits, output_kv_cache, ___ = self.model_decoder(tokens, None, kv_cache_read=kv_cache_read, kv_cache_write=kv_cache_write, #offset=offset,
-            #                                                             af_cache_write=None, af_cache_read=af_cache_read)
-            #         # print(f"{logits.shape=} {tokens.shape=}")
-            #         # raise Exception
-            #         logits_ = logits[:, -1, :]
+                    logits, output_kv_cache, ___ = self.model_decoder(tokens, None, kv_cache_read=kv_cache_read, af_cache_write=None, af_cache_read=af_cache_read)
+                    # print(f"{logits.shape=} {tokens.shape=}")
+                    # raise Exception
+                    logits_ = logits[:, -1, :]
 
-            #         logits_clone = torch.clone(logits_)  # <----add this
-            #         # for k in range(tokens.shape[0]):  # <----add this
-            #         logits_clone[:, :self.timestamp_begin] = -np.inf  # <----add this
-            #         ts_token = torch.argmax(logits_clone,  dim=-1)  # <----add this
-            #         token = torch.argmax(logits_, dim=-1)
-            #         return logits, output_kv_cache, token, ts_token
+                    logits_clone = torch.clone(logits_)  # <----add this
+                    # for k in range(tokens.shape[0]):  # <----add this
+                    logits_clone[:, :self.timestamp_begin] = -np.inf  # <----add this
+                    ts_token = torch.argmax(logits_clone,  dim=-1)  # <----add this
+                    token = torch.argmax(logits_, dim=-1)
+                    return logits, output_kv_cache, token, ts_token
 
-            # w = wrapper(self.model.decoder, self.timestamp_begin)
-            # # w(tokens, self.kv_cache, torch.tensor(offset), af_cache_read)
-            # # raise Exception
-            # torch.onnx.export(
-            #     w,
-            #     (tokens, kv_cache_read, kv_cache_write, # torch.tensor(offset),
-            #         af_cache_read),
-            #     "decoder.onnx",
-            #     verbose=False,
-            #     opset_version=13,
-            #     input_names=["tokens", "kv_cache_read", "kv_cache_write", "af_cache_read"],
-            #     output_names=["logits", "output_kv_cache", "token", "ts_token"],
-            #     dynamic_axes={
-            #         "tokens": [0, 1],
-            #         "kv_cache_read": [1, 2],
-            #         "kv_cache_write": [1, 2],
-            #         "af_cache_read": [1],
-            #         "logits": [0, 1],
-            #         "output_kv_cache": [1, 2],
-            #         "token": [0],
-            #         "ts_token": [0]
-            #     }
-            # )
+            w = wrapper(self.model.decoder, self.timestamp_begin)
+            # print(f"{tokens.shape=} {kv_cache_read.shape=} {af_cache_read.shape=}")
+            # logits, output_kv_cache, _, __ = w(tokens, kv_cache_read, af_cache_read)
+            # print(f"{logits.shape=} {output_kv_cache.shape=}")
+            # tokens.shape=torch.Size([2, 1]) kv_cache_read.shape=torch.Size([24, 2, 3, 768]) af_cache_read.shape=torch.Size([24, 2, 1500, 768])
+            # logits.shape=torch.Size([2, 1, 51865]) output_kv_cache.shape=torch.Size([24, 2, 4, 768])
+
             # raise Exception
+            torch.onnx.export(
+                w,
+                (tokens, kv_cache_read, af_cache_read),
+                "decoder.onnx",
+                verbose=False,
+                opset_version=13,
+                input_names=["tokens", "kv_cache_read", "af_cache_read"],
+                output_names=["logits", "output_kv_cache", "token", "ts_token"],
+                dynamic_axes={
+                    "tokens": {0: 'batch_size', 1: 'uncached_token_len'},
+                    "kv_cache_read": {1: 'batch_size', 2: 'cached_token_len'},
+                    "af_cache_read": {1: 'batch_size'},
+                    "logits": {0: 'batch_size', 1: 'uncached_token_len'},
+                    "output_kv_cache": {1: 'batch_size', 2: 'full_token_length'},
+                    "token": {0: 'batch_size'},
+                    "ts_token": {0: 'batch_size'}
+                }
+            )
+            raise Exception
             # -----------
 
         # if af_cache_write is not None:
@@ -233,18 +235,18 @@ class PyTorchInference(Inference):
         #     assert audio_features is None
         #     print(f"{tokens.shape=} {self.kv_cache.shape=} {af_cache_read.shape=}")
 
-        print(f"{kv_cache_read.shape=} {kv_cache_write.shape=}")
+        # print(f"{kv_cache_read.shape=} {kv_cache_write.shape=}")
         logits, kv_cache, af_cache = self.model.decoder(
                         x=tokens,
                         xa=audio_features,
                         kv_cache_read=kv_cache_read,
-                        kv_cache_write=kv_cache_write,
+                        # kv_cache_write=kv_cache_write,
                         # offset=torch.tensor(offset),
                         af_cache_write=af_cache_write,
                         af_cache_read=af_cache_read
                         )
         self.kv_cache = kv_cache
-        print(f"{kv_cache.shape=}\n")
+        # print(f"{kv_cache.shape=}\n")
 
         # logits_ = logits[:, -1, :]
         # logits_clone = torch.clone(logits_)  # <----add this
@@ -744,7 +746,7 @@ class DecodingTask:
                                     self.tokens,
                                     audio_features,
                                     kv_cache_read=None,
-                                    kv_cache_write=None,
+                                    # kv_cache_write=None,
                                     # offset=torch.tensor(0, device=audio_features.device),
                                     af_cache_write=self.af_cache_write,
                                     af_cache_read=None,
